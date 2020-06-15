@@ -1,0 +1,17 @@
+{
+  "databases": {
+    "postgres": {
+      "engine": "postgres",
+      "host": "localhost",
+      "port": "5632",
+      "username": "postgres",
+      "password": "postgres",
+      "database": "postgres"
+    },
+    "mysql": {
+      "engine": "mysql"
+
+    }
+  }
+}
+

@@ -1,69 +1,174 @@
 package majix
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
-	"reflect"
 	"regexp"
+	"strings"
 )
 
-type RouterHandler func(http.ResponseWriter, *http.Request, map[string]string)
+type Handler func(http.ResponseWriter, *http.Request, *Application)
 
-type RouteMapper struct {
-	mapper map[*regexp.Regexp]*Route
-}
+type Middleware func(Handler) Handler
 
 type Route struct {
-	handler interface{}
-	pattern *regexp.Regexp
-	kind    reflect.Type
+	handler   interface{}
+	method    string
+	meddlers  []Middleware
+	urlParams map[string]string
 }
 
-func (r *RouteMapper) Add(pattern string, handler interface{}) {
+func (r *Route) Middleware(handler ...Middleware) {
+	r.meddlers = handler
+}
+
+type RouteManagerInterface interface {
+	Any(pattern string, handler interface{})
+	Get(pattern string, handler interface{}) *Route
+	Post(pattern string, handler interface{}) *Route
+	Put(pattern string, handler interface{}) *Route
+	Patch(pattern string, handler interface{}) *Route
+	Options(pattern string, handler interface{}) *Route
+	Delete(pattern string, handler interface{}) *Route
+	Head(pattern string, handler interface{}) *Route
+	Connect(pattern string, handler interface{}) *Route
+	Trace(pattern string, handler interface{}) *Route
+	Start(address string)
+}
+
+type RouteManager struct {
+	mapper    map[*regexp.Regexp]*Route
+	duplicate map[string]bool
+	App       *Application
+}
+
+func (r *RouteManager) Error() {
+
+}
+
+func (r *RouteManager) add(method string, pattern string, handler interface{}) *Route {
+	_, ok := r.duplicate[pattern]
+	if ok {
+		panic(pattern + "duplicate route")
+	}
 
 	reg, _ := regexp.Compile(pattern)
 	route := &Route{
-		handler: handler,
-		pattern: reg,
-		kind:    reflect.TypeOf(handler),
+		handler: Handler(handler.(func(http.ResponseWriter, *http.Request, *Application))),
+		method:  method,
 	}
 	r.mapper[reg] = route
+	r.duplicate[pattern] = true
+
+	return route
+
 }
 
-func (r *RouteMapper) Start(address string) {
+func (r *RouteManager) Start(app *Application, address string) {
+	fmt.Println("Server is running on : ", address)
+	r.App = app
 	http.ListenAndServe(address, r)
 }
 
-func NewRouter() *RouteMapper {
-	return &RouteMapper{
-		mapper: make(map[*regexp.Regexp]*Route),
-	}
+func (r *RouteManager) Any(pattern string, handler interface{}) {
+	r.add("", pattern, handler)
 }
 
-func (r *RouteMapper) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (r *RouteManager) Get(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodGet, pattern, handler)
+}
 
-	for pattern, f := range r.mapper {
+func (r *RouteManager) Post(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodPost, pattern, handler)
+}
+
+func (r *RouteManager) Put(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodPut, pattern, handler)
+}
+
+func (r *RouteManager) Patch(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodPatch, pattern, handler)
+}
+
+func (r *RouteManager) Options(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodOptions, pattern, handler)
+}
+
+func (r *RouteManager) Delete(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodDelete, pattern, handler)
+}
+
+func (r *RouteManager) Head(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodHead, pattern, handler)
+}
+
+func (r *RouteManager) Connect(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodConnect, pattern, handler)
+}
+
+func (r *RouteManager) Trace(pattern string, handler interface{}) *Route {
+	return r.add(http.MethodTrace, pattern, handler)
+}
+
+func (r *RouteManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+
+	method := getMethod(req)
+
+	for pattern, route := range r.mapper {
 
 		if matches := pattern.FindStringSubmatch(req.URL.Path); matches != nil {
+			if err := checkMethod(w, method, route.method); err != nil {
+				return
+			}
+
 			urlParams := make(map[string]string)
 
 			for i := 1; i < len(matches); i++ {
 				urlParams[pattern.SubexpNames()[i]] = matches[i]
 			}
+			route.urlParams = urlParams
+			r.App.Util.route = route
 
-			switch f.handler.(type) {
-			case func(http.ResponseWriter, *http.Request, map[string]string):
-				x := f.handler.(func(http.ResponseWriter, *http.Request, map[string]string))
-				x(w, req, urlParams)
-			case func(http.ResponseWriter, *http.Request):
-				x := f.handler.(func(http.ResponseWriter, *http.Request))
-				x(w, req)
+			revivedFunction := route.handler.(Handler)
+			if route.meddlers != nil {
+				len := len(route.meddlers) - 1
+				revivedFunction = route.meddlers[len](revivedFunction)
+				for i := len - 1; i >= 0; i-- {
+					revivedFunction = route.meddlers[i](revivedFunction)
+				}
 			}
+			revivedFunction(w, req, r.App)
+			return
 
 		}
 	}
-	fmt.Println(req.URL.Path)
+	fmt.Fprintf(w, "404 Not Found")
+	return
 }
 
-type Request struct {
+func checkMethod(w http.ResponseWriter, method string, routeMethod string) error {
+	if routeMethod != "" && strings.ToUpper(method) != routeMethod {
+		fmt.Fprintf(w, "Method Not Allowed")
+		return errors.New("method not allowed")
+	}
+	return nil
+}
+
+func getMethod(req *http.Request) string {
+	var method = req.Method
+	if req.Method != http.MethodGet {
+		req.ParseForm()
+		if req.Form.Get("_method") != "" {
+			method = req.Form.Get("_method")
+		}
+	}
+	return method
+}
+
+func NewRouter() *RouteManager {
+	return &RouteManager{
+		mapper:    make(map[*regexp.Regexp]*Route),
+		duplicate: make(map[string]bool),
+	}
 }
